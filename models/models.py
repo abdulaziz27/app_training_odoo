@@ -1,0 +1,152 @@
+# -*- coding: utf-8 -*-
+
+from odoo import models, fields, api
+from datetime import timedelta
+from odoo import exceptions
+
+class Kursus(models.Model):
+    _name = 'training.kursus'
+    _inherit = 'mail.thread'
+     
+    name = fields.Char(string="Judul", required=True, readonly=True, states={'draft': [('readonly', False)]}, track_visibility='onchange')
+    description = fields.Text(readonly=True, states={'draft': [('readonly', False)]}, track_visibility='onchange')
+    session_ids = fields.One2many('training.sesi', 'course_id', string="Sesi", readonly=True, states={'draft': [('readonly', False)]}, track_visibility='onchange')
+    responsible_id = fields.Many2one('res.users', ondelete='set null', string="Penanggung Jawab", index=True, readonly=True, states={'draft': [('readonly', False)]}, track_visibility='onchange')
+   
+    _sql_constraints = [
+                    ('name_description_cek', 'CHECK(name != description)', 'Judul kursus dan keterangan tidak boleh sama '),
+                    ('name_unik', 'UNIQUE(name)', 'Judul kursus harus unik')
+    ]
+    state = fields.Selection([
+        ('draft', 'Draft'),
+        ('open', 'Open'),
+        ('done', 'Done'),
+    ], string='Status', readonly=True, copy=False, default='draft', track_visibility='onchange')
+
+    @api.multi
+    def copy(self, default=None):
+        default = dict(default or {})
+        copied_count = self.search_count([('name', '=like', "Copy of {}%".format(self.name))]) # Searching judul kursus yang sama dan menyimpannya pada variable copied_count 
+         
+        if not copied_count: # Cek isi variable copied_count (hasil searching) 
+            new_name = "Copy of {}".format(self.name) # Jika proses searching judul yang sama tidak ditemukan, maka judul baru akan dikasih imbuhan 'Copy of'
+        else:
+            new_name = "Copy of {} ({})".format(self.name, copied_count) # Jika proses searching judul yang sama ditemukan, maka judul baru akan dikasih imbuhan 'Copy of' dan angka terakhir duplicate
+         
+        default['name'] = new_name # Mereplace value field name dengan yang sudah di sesuaikan
+        return super(Kursus, self).copy(default)
+    
+    @api.multi
+    def action_confirm(self):
+        self.write({'state' : 'open'})
+        print ("##############################")
+        print ("masuk confirm")
+        print ("##############################")
+    @api.multi
+    def action_cancel(self):
+        self.write({'state' : 'draft'})
+        print ("##############################")
+        print ("masuk cancel")
+        print ("##############################")
+    @api.multi
+    def action_close(self):
+        self.write({'state' : 'done'})
+        print ("##############################")
+        print ("masuk close")
+        print ("##############################")
+
+
+
+class Sesi(models.Model):
+    _name = 'training.sesi'
+     
+    name = fields.Char(required=True)
+    color = fields.Integer('Warna')
+    attendees_count = fields.Integer(string="Jumlah Peserta", compute='_get_attendees_count', store=True)
+    end_date = fields.Date(string="Tanggal Selesai", store=True, compute='_get_end_date', inverse='_set_end_date') 
+    taken_seats = fields.Float(string="Kursi Terisi", compute='_taken_seats')
+    start_date = fields.Date(default=fields.Date.today)
+    duration = fields.Float(digits=(6, 2), help="Durasi Hari")
+    seats = fields.Integer(string="Jumlah Kursi", default=1)
+    instructor_id = fields.Many2one('res.partner', string="Instruktur", domain=['|', ('instructor', '=', True), ('category_id.name', 'ilike', "Pengajar")])
+    course_id = fields.Many2one('training.kursus', ondelete='cascade', string="kursus", required=True)
+    attendee_ids = fields.Many2many('res.partner', string="Peserta", domain=[('instructor', '=', False)])
+
+    @api.multi
+    def cetak_sesi(self):
+        return self.env.ref("training_odoo.cetak_sesi").report_action(self)
+
+    @api.depends('seats', 'attendee_ids')
+    def _taken_seats(self):
+        for r in self:
+            if not r.seats:
+                r.taken_seats = 0.0
+            else:
+                r.taken_seats = 100.0 * len(r.attendee_ids) / r.seats
+
+    @api.onchange('seats', 'attendee_ids')
+    def _verify_valid_seats(self):
+        if self.seats <= 0: # cek nilai field seats, jika dibawah 0 (negatif), maka masuk kondisi if
+            return {
+                    'value': {
+                            'seats': len(self.attendee_ids) or 1 # mengisi field seats dengan nilai jumlah peserta atau 1
+                            },
+                    'warning': {
+                                'title': "Nilai Jumlah Kursi Salah", # judul pop up
+                                'message': "Jumlah Kursi Tidak Boleh Negatif" # pesan pop up
+                                }
+                    }
+            
+        if self.seats < len(self.attendee_ids): # cek nilai field seats (jumlah kursi) apakah lebih kecil dari field attendee_ids (jumlah peserta), jika iya maka masuk kondisi if
+            return {
+                    'value': {
+                            'seats': len(self.attendee_ids) # mengisi field seats dengan nilai jumlah peserta
+                            },
+                    'warning': {
+                                'title': "Peserta Terlalu Banyak", # judul pop up
+                                'message': "Tambahkan Kursi atau Kurangi Peserta" # pesan pop up
+                                }
+                    }
+    @api.constrains('instructor_id', 'attendee_ids')
+    def _check_instructor_not_in_attendees(self):
+        for r in self:
+            if r.instructor_id and r.instructor_id in r.attendee_ids: # Jika field instructor_id (Instruktur) diisi DAN instructor_id ada di tabel attendee_ids (Peserta), maka munculkan pesan error 
+                raise exceptions.ValidationError("Seorang instruktur tidak boleh menjadi peserta")
+    
+    @api.depends('start_date', 'duration')
+    def _get_end_date(self):
+        for r in self:
+            # Pengecekan jika field duration & start_date tidak diisi, maka field end_date akan di update sama seperti field start_date
+            if not (r.start_date and r.duration):
+                r.end_date = r.start_date
+                continue
+    
+            # Membuat variable start yang isinya tanggal dari field start_date
+            start = fields.Date.from_string(r.start_date)
+    
+            # Membuat variable duration yang isinya durasi hari dari field duration
+            # Durasi hari dikurangi 1 detik agar start_date masuk kedalam durasi hari
+            duration = timedelta(days=r.duration, seconds=-1)
+    
+            # Mengupdate field end_date dari perhitungan variabel start ditambah variabel duration
+            r.end_date = start + duration
+    
+    def _set_end_date(self):
+        for r in self:
+            if not (r.start_date and r.end_date):
+                continue
+    
+            # Membuat variable start_date yang isinya tanggal dari field start_date
+            start_date = fields.Date.from_string(r.start_date)
+    
+            # Membuat variable end_date yang isinya tanggal dari field end_date
+            end_date = fields.Date.from_string(r.end_date)
+    
+            # Mengupdate field duration (jika ada perubahan dari field end_date) dari perhitungan variabel end_date dikurangi variabel start_date (ditambah 1 hari agar end_date termasuk durasi hari)
+            r.duration = (end_date - start_date).days + 1
+    
+    @api.depends('attendee_ids')
+    def _get_attendees_count(self):
+        for r in self:
+            # Mengupdate field attendees_count berdasarkan jumlah record di tabel peserta 
+            r.attendees_count = len(r.attendee_ids)

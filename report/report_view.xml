@@ -1,0 +1,12 @@
+<odoo>
+    <data>
+    <report
+    id="cetak_sesi"
+    string="Report QWEB"
+    model="training.sesi"
+    report_type="qweb-pdf"
+    file="training_odoo.laporan_sesi"
+    name="training_odoo.laporan_sesi"
+    />
+    </data>
+</odoo>
